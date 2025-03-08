@@ -1,7 +1,11 @@
 wall_follower:
   ros__parameters:
     scan_topic: "/scan"
-    drive_topic: "/drive"
-    side: 1
+    drive_topic: "/vesc/high_level/input/nav_2"
+    side: -1
     velocity: 1.0
-    desired_distance: 1.
+    desired_distance: .75
+    ransac: 0
+
+# safety_controller:
+#   ros__parameters:
