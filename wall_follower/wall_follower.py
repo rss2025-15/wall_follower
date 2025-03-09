@@ -2,161 +2,172 @@
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped
 from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
 from rcl_interfaces.msg import SetParametersResult
-import time
 
-from std_msgs.msg import Header
 from wall_follower.visualization_tools import VisualizationTools
 
 
-
 class WallFollower(Node):
-    def PID(self, Kp, Ki, Kd, MV_bar=0):
-        e_prev = 0
-        #t_prev = -1
-        I = 0
-        MV = MV_bar
-        Dheading=0
-        while True:
-            global reset
-            if reset==True:
-                I=0
-            dt, e = yield MV, Dheading
-            #e = SP - PV
-            P = Kp * e
-            I = I + Ki*e*dt
-            D = Kd*(e - e_prev)/dt
-            MV, Dheading = (MV_bar + P + I + D), D
-            #print(f'MV:{int(MV)} P:{int(P)} I:{int(I)} D:{int(D)} e:{e} e_prev:{e_prev}')
-
-            e_prev = e
-
 
     def __init__(self):
         super().__init__("wall_follower")
         # Declare parameters to make them available for use
+        # DO NOT MODIFY THIS! 
         self.declare_parameter("scan_topic", "default")
         self.declare_parameter("drive_topic", "default")
         self.declare_parameter("side", 1)
-        self.declare_parameter("velocity", 1.)
-        self.declare_parameter("desired_distance", 1.)
-        self.declare_parameter("ransac", 1)
-        
-        
+        self.declare_parameter("velocity", 1.0)
+        self.declare_parameter("desired_distance", 1.0)
 
         # Fetch constants from the ROS parameter server
-        # This is necessary for the tests to be able to test varying parameters!
+        # DO NOT MODIFY THIS! This is necessary for the tests to be able to test varying parameters!
         self.SCAN_TOPIC = self.get_parameter('scan_topic').get_parameter_value().string_value
         self.DRIVE_TOPIC = self.get_parameter('drive_topic').get_parameter_value().string_value
         self.SIDE = self.get_parameter('side').get_parameter_value().integer_value
         self.VELOCITY = self.get_parameter('velocity').get_parameter_value().double_value
         self.DESIRED_DISTANCE = self.get_parameter('desired_distance').get_parameter_value().double_value
-        self.RANSAC = self.get_parameter('ransac').get_parameter_value().integer_value
-
-        self.add_on_set_parameters_callback(self.parameters_callback)
-        if self.RANSAC:
-            from sklearn import linear_model
-
 		
-	# TODO: Initialize your publishers and subscribers here
-        self.subscription_=self.create_subscription(LaserScan, self.SCAN_TOPIC, self.callback, 1)
-        self.publisher_=self.create_publisher(AckermannDriveStamped, self.DRIVE_TOPIC, 1)
-        self.line_pub = self.create_publisher(Marker, "laser", 1)
+        # This activates the parameters_callback function so that the tests are able
+        # to change the parameters during testing.
+        # DO NOT MODIFY THIS! 
+        self.add_on_set_parameters_callback(self.parameters_callback)
+  
+        self.drive_pub = self.create_publisher(AckermannDriveStamped, self.DRIVE_TOPIC, 1)
+        self.scan_sub = self.create_subscription(LaserScan, self.SCAN_TOPIC, self.scan_callback, 10)
+        self.marker_pub = self.create_publisher(Marker, "/wall", 1)
 
-        self.point_viz = self.create_publisher(LaserScan, "point_viz", 1)
+        self.prev_error = 0
+        self.prev_time = self.get_clock().now().nanoseconds * 1e-9
 
-    # error increment
-        self.start = time.time()
-        self.error_pre = 0
-        self.i_ctrl = 0
-
-        self.clock = self.get_clock()
-        self.start = self.clock.now()
-        self.time_prev = self.clock.now()
-
-        self.counter = 0
-        self.count = 0
+        self.Kp = 1.2
+        self.Kd = 0.6
         self.total = 0
+        self.count = 0
+        self.abs_e = 0
+        self.lidar_error =0
+    
+    def scan_callback(self, scan):
+        # find angles in range
+        ranges = np.array(scan.ranges)
+        angles = np.linspace(scan.angle_min, scan.angle_max, len(ranges))
 
-        self.yaw_pid = self.PID(.12, 0., 0.02)
-        self.yaw_pid.send(None)
+        if self.SIDE == 1: # left side
+            lower_bound = np.deg2rad(60)
+            upper_bound = np.deg2rad(120)
+        else: # right side
+            lower_bound = np.deg2rad(-120)
+            upper_bound = np.deg2rad(-60)
 
-    # TODO: Write your callback functions here 
-    def callback(self, lidar_msg):
+        target_angle = np.deg2rad(90 * self.SIDE)
 
-        self.get_logger().info(f"side: {self.SIDE}")
-        
-        angles = np.linspace(lidar_msg.angle_min, lidar_msg.angle_max, len(lidar_msg.ranges))
-        # self.get_logger().info("'%s'" % self.SIDE)
-        if self.SIDE>0:
-            slice_start, slice_stop = int(((0.05)*np.pi - lidar_msg.angle_min)/lidar_msg.angle_increment), int(((0.4)*np.pi - lidar_msg.angle_min)/lidar_msg.angle_increment)
-        else:
-            slice_start, slice_stop = int((-(0.4)*np.pi - lidar_msg.angle_min)/lidar_msg.angle_increment), int((-(0.05)*np.pi - lidar_msg.angle_min)/lidar_msg.angle_increment)
-        
-        sliced_angles = angles[slice_start:slice_stop]
-        sliced_lidar = np.array(lidar_msg.ranges[slice_start:slice_stop])
-        close = np.where(sliced_lidar <2.0)
-        sliced_angles = sliced_angles[close]
-        sliced_lidar = sliced_lidar[close]
+        # find the indices of the angles that are within the bounds
+        indices = np.where((angles >= lower_bound) & (angles <= upper_bound))
+        filtered_ranges = ranges[indices]
+        filtered_angles = angles[indices]
 
-        lidar_x = np.cos(sliced_angles, dtype = 'float')*sliced_lidar
-        lidar_y = np.sin(sliced_angles, dtype = 'float')*sliced_lidar
-        A = np.vstack([lidar_x, np.ones(len(lidar_x))]).T
-        if self.RANSAC==1:
-            ransac = linear_model.RANSACRegressor()
-            ransac.fit(lidar_x.reshape(-1,1), lidar_y)
+        if len(filtered_ranges) == 0:
+            self.publish_drive(0)
+            return
 
-            m= float(ransac.estimator_.coef_)
-            c = float(ransac.estimator_.intercept_)
-        else:
-            m, c = np.linalg.lstsq(A, lidar_y)[0]
-        self.get_logger().info("m, c '%s' '%s'" % (m, c))
-        
-        
-        if sliced_angles.any():
+        x = filtered_ranges * np.cos(filtered_angles)
+        y = filtered_ranges * np.sin(filtered_angles)
 
-            lsr_x = np.linspace(np.min(lidar_x), np.max(lidar_x), len(lidar_x))
-            lsr_lidar = m * lsr_x + c
-            VisualizationTools.plot_line(lsr_x, lsr_lidar, self.line_pub, frame="/laser")
+        A = np.vstack([x, np.ones(len(x))]).T
+        m, b = np.linalg.lstsq(A, y, rcond=None)[0]
 
-            used_points_msg = lidar_msg
-            used_points_msg.angle_min = sliced_angles.min()
-            used_points_msg.angle_max = sliced_angles.max()
-            used_points_msg.ranges = sliced_lidar.tolist()
+        distance = abs(b) / np.sqrt(1 + m**2)
+        self.get_logger().info(f"Distance: {distance}, Side: {self.SIDE}")
 
-            self.point_viz.publish(used_points_msg)
-
-            error = (-1)*self.SIDE*self.DESIRED_DISTANCE - (-1)*self.SIDE*np.min(np.sqrt(np.square(lsr_x) + np.square(lsr_lidar))) 
-            self.get_logger().info(f"error: {error}")
-            dt = self.clock.now() - self.time_prev
-            t = self.clock.now() - self.start
-
-            # check for stuff right in front of car
+        error = (distance - self.DESIRED_DISTANCE) * self.SIDE
+        current_time = self.get_clock().now().nanoseconds * 1e-9
+        dt = current_time - self.prev_time if current_time - self.prev_time > 0 else 0.001
+        d_error = (error - self.prev_error) / dt
+        # self.get_logger().info(f"{np.where(np.array(filtered_ranges) <2.0)}")
+        if np.any((np.array(filtered_ranges)) <self.DESIRED_DISTANCE+0.5):
+            steering_angle = self.Kp * error + self.Kd * d_error
             alpha = 2.
-            if np.min(np.abs(sliced_angles)) < 0.16*np.pi:
-                error += alpha*(-1)*self.SIDE*(1/np.min(np.sqrt(np.square(lsr_x) + np.square(lsr_lidar))))
-           
-            ctrl_output, _= self.yaw_pid.send((dt.nanoseconds/1e9, error))
-            self.time_prev = t
+            if np.min(np.abs(filtered_ranges)) < 0.16*np.pi:
+                error += alpha*(-1)*self.SIDE*1/distance
         else:
-            ctrl_output = 2.0*self.SIDE 
+            self.get_logger().info(f"cannot see!!{self.count}")
+            steering_angle = 2.0*self.SIDE 
+        self.publish_drive(steering_angle)
         
+        self.prev_error = error
+        self.prev_time = current_time
+
+        self.publish_wall_marker(scan, m, b, x, y)
+        self.total += error**2
+        self.abs_e += abs(error)
+        start, stop = int(((0.45)*np.pi - scan.angle_min)/scan.angle_increment), int(((0.55)*np.pi - scan.angle_min)/scan.angle_increment)
+        self.get_logger().info(f"{start} {stop} {str(scan.ranges[start:start+1])}")
+        self.lidar_error+=abs(self.DESIRED_DISTANCE-np.mean(np.array(scan.ranges[start:stop])))
+        self.count += 1
+
+        # self.get_logger().info(f"total: {self.total}, count: {self.count}")
+        self.get_logger().info(f"mse: {(self.total/self.count)**0.5}, abs e: {self.abs_e/self.count} lidar errror:{self.lidar_error/self.count} count: {self.count}")
+
+    def publish_drive(self, steering_angle):
         drive_msg = AckermannDriveStamped()
-
-        drive_msg.drive.steering_angle = np.clip(ctrl_output, -2/3*np.pi, 2/3*np.pi)
-        drive_msg.drive.steering_angle_velocity = 0.0
         drive_msg.drive.speed = self.VELOCITY
-        drive_msg.drive.acceleration = 0.0
-        drive_msg.drive.jerk = 0.0
+        drive_msg.drive.steering_angle = steering_angle
+        self.drive_pub.publish(drive_msg)
 
-        self.get_logger().info(f"steering angle: {drive_msg.drive.steering_angle}")
+    def publish_wall_marker(self, scan, m, b, x_points, y_points):
+        marker = Marker()
+        marker.header.frame_id = scan.header.frame_id
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = "wall"
+        marker.id = 0
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
 
-        self.publisher_.publish(drive_msg)
-        # self.get_logger().info("Slices  '%s' '%s'" % (slice_start, slice_stop))
+        marker.scale.x = 0.05
+        marker.color.a = 1.0
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+
+        x_min, x_max = min(x_points), max(x_points)
+
+        num_line_points = 10
+        xs = np.linspace(x_min, x_max, num_line_points)
+        for xi in xs:
+            yi = m * xi + b
+            marker.points.append(self.create_point_msg(xi, yi, 0.0))
+
+        self.marker_pub.publish(marker)
+
+        points_marker = Marker()
+        points_marker.header.frame_id = scan.header.frame_id
+        points_marker.header.stamp = self.get_clock().now().to_msg()
+        points_marker.ns = "wall_points"
+        points_marker.id = 1
+        points_marker.type = Marker.POINTS
+        points_marker.action = Marker.ADD
+
+        points_marker.scale.x = 0.03
+        points_marker.scale.y = 0.03
+        points_marker.color.a = 1.0
+        points_marker.color.r = 0.0
+        points_marker.color.g = 1.0
+        points_marker.color.b = 0.0
+
+        for xi, yi in zip(x_points, y_points):
+            points_marker.points.append(self.create_point_msg(xi, yi, 0.0))
+
+        self.marker_pub.publish(points_marker)
+
+    def create_point_msg(self, x, y, z):
+        point = Point()
+        point.x = x
+        point.y = y
+        point.z = z
+        return point
     
     def parameters_callback(self, params):
         """
@@ -168,22 +179,19 @@ class WallFollower(Node):
         for param in params:
             if param.name == 'side':
                 self.SIDE = param.value
-                # self.get_logger().info(f"Updated side to {self.SIDE}")
+                self.get_logger().info(f"Updated side to {self.SIDE}")
             elif param.name == 'velocity':
                 self.VELOCITY = param.value
-                # self.get_logger().info(f"Updated velocity to {self.VELOCITY}")
+                self.get_logger().info(f"Updated velocity to {self.VELOCITY}")
             elif param.name == 'desired_distance':
                 self.DESIRED_DISTANCE = param.value
-                # self.get_logger().info(f"Updated desired_distance to {self.DESIRED_DISTANCE}")
+                self.get_logger().info(f"Updated desired_distance to {self.DESIRED_DISTANCE}")
         return SetParametersResult(successful=True)
 
 
 def main():
     rclpy.init()
-    global reset
-    reset = True
     wall_follower = WallFollower()
-    reset=False
     rclpy.spin(wall_follower)
     wall_follower.destroy_node()
     rclpy.shutdown()
