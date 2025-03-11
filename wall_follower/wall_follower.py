@@ -86,12 +86,19 @@ class WallFollower(Node):
         current_time = self.get_clock().now().nanoseconds * 1e-9
         dt = current_time - self.prev_time if current_time - self.prev_time > 0 else 0.001
         d_error = (error - self.prev_error) / dt
-        # self.get_logger().info(f"{np.where(np.array(filtered_ranges) <2.0)}")
+
+        front_lower_bound = np.deg2rad(-0.16*np.pi)
+        front_upper_bound = np.deg2rad(0.16*np.pi)
+        front_indices = np.where((angles >= front_lower_bound) & (angles <= front_upper_bound))
         if np.any((np.array(filtered_ranges)) <self.DESIRED_DISTANCE+0.5):
+            
+            alpha = 1.5
+            front_angles = np.where(ranges[front_indices]<self.DESIRED_DISTANCE+0.5)
+            
+            if np.any(front_angles):
+                self.get_logger().info(f"{np.min(np.abs(angles[front_angles]))}")
+                error += alpha*self.SIDE*1/distance
             steering_angle = self.Kp * error + self.Kd * d_error
-            alpha = 2.
-            if np.min(np.abs(filtered_ranges)) < 0.16*np.pi:
-                error += alpha*(-1)*self.SIDE*1/distance
         else:
             self.get_logger().info(f"cannot see!!{self.count}")
             steering_angle = 2.0*self.SIDE 
