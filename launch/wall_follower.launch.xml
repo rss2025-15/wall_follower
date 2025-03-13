@@ -3,9 +3,9 @@
   <node pkg="wall_follower" name="wall_follower" exec="wall_follower" output="screen">
     <param from="$(find-pkg-share wall_follower)/params.yaml"/>
   </node>
-  <node pkg="safety_controller" name="safety_controller" exec="safety_controller" output="screen">
+  <!-- <node pkg="safety_controller" name="safety_controller" exec="safety_controller" output="screen">
     <param from="/root/racecar_ws/src/safety_controller/safety_controller/params.yaml"/>
-  </node>
+  </node> -->
   <!-- <node pkg="wall_follower" name="drive_forward" exec="drive_forward" output="screen">
   </node> -->
 </launch>

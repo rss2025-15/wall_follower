@@ -45,10 +45,16 @@ class WallFollower(Node):
 
         self.Kp = 1.2
         self.Kd = 0.6
+
+        #for logging
         self.total = 0
         self.count = 0
         self.abs_e = 0
         self.lidar_error =0
+        self.err_log=[]
+        self.log_times=[]
+        self.filename = 'obs'
+
     
     def scan_callback(self, scan):
         # find angles in range
@@ -57,9 +63,9 @@ class WallFollower(Node):
 
         if self.SIDE == 1: # left side
             lower_bound = np.deg2rad(60)
-            upper_bound = np.deg2rad(120)
+            upper_bound = np.deg2rad(90)
         else: # right side
-            lower_bound = np.deg2rad(-120)
+            lower_bound = np.deg2rad(-90)
             upper_bound = np.deg2rad(-60)
 
         target_angle = np.deg2rad(90 * self.SIDE)
@@ -108,6 +114,18 @@ class WallFollower(Node):
         self.prev_time = current_time
 
         self.publish_wall_marker(scan, m, b, x, y)
+
+        # cut out first 100 timesteps
+        if len(self.log_times)<350:
+            self.err_log.append(error)
+            self.log_times.append(current_time)
+        elif len(self.log_times)==350:
+            with open(self.filename+'.npy', 'wb') as f:
+                np.save(f, np.array(self.err_log))
+                np.save(f, np.array(self.log_times))
+        else:
+            pass
+
         self.total += error**2
         self.abs_e += abs(error)
         start, stop = int(((0.45)*np.pi - scan.angle_min)/scan.angle_increment), int(((0.55)*np.pi - scan.angle_min)/scan.angle_increment)
